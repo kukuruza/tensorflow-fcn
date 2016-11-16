@@ -10,7 +10,7 @@ import sys
 import numpy as np
 import tensorflow as tf
 
-VGG_MEAN = [103.939, 116.779, 123.68]
+#VGG_MEAN = [103.939, 116.779, 123.68]
 
 
 class FCN32VGG:
@@ -33,14 +33,16 @@ class FCN32VGG:
         self.wd = 5e-4
         print("npy file loaded")
 
-    def build(self, rgb, train=False, num_classes=20, random_init_fc8=False,
+        self.is_train_phase = tf.placeholder(tf.bool, name='train_phase')
+
+    def build(self, bgr, num_classes=20, random_init_fc8=False,
               debug=False):
         """
         Build the VGG model using loaded weights
         Parameters
         ----------
-        rgb: image batch tensor
-            Image in rgb shap. Scaled to Intervall [0, 255]
+        bgr: normalized image batch tensor
+            Image in bgr shap.
         train: bool
             Whether to build train or inference graph
         num_classes: int
@@ -54,17 +56,6 @@ class FCN32VGG:
         # Convert RGB to BGR
 
         with tf.name_scope('Processing'):
-
-            red, green, blue = tf.split(3, 3, rgb)
-            # assert red.get_shape().as_list()[1:] == [224, 224, 1]
-            # assert green.get_shape().as_list()[1:] == [224, 224, 1]
-            # assert blue.get_shape().as_list()[1:] == [224, 224, 1]
-            bgr = tf.concat(3, [
-                blue - VGG_MEAN[0],
-                green - VGG_MEAN[1],
-                red - VGG_MEAN[2],
-            ])
-
             if debug:
                 bgr = tf.Print(bgr, [tf.shape(bgr)],
                                message='Shape of input image: ',
@@ -93,14 +84,18 @@ class FCN32VGG:
         self.conv5_3 = self._conv_layer(self.conv5_2, "conv5_3")
         self.pool5 = self._max_pool(self.conv5_3, 'pool5', debug)
 
-        self.fc6 = self._fc_layer(self.pool5, "fc6")
+        def get_keep_prob():
+          ''' keep_prob for dropout layer, depending on phase '''
+          return tf.cond (
+            self.is_train_phase, 
+            lambda: tf.constant(0.5), 
+            lambda: tf.constant(1.0))
 
-        if train:
-            self.fc6 = tf.nn.dropout(self.fc6, 0.5)
+        self.fc6 = self._fc_layer(self.pool5, "fc6")
+        self.fc6 = tf.nn.dropout(self.fc6, get_keep_prob())
 
         self.fc7 = self._fc_layer(self.fc6, "fc7")
-        if train:
-            self.fc7 = tf.nn.dropout(self.fc7, 0.5)
+        self.fc7 = tf.nn.dropout(self.fc7, get_keep_prob())
 
         if random_init_fc8:
             self.score_fr = self._score_layer(self.fc7, "score_fr",
@@ -120,6 +115,14 @@ class FCN32VGG:
         self.heatmap = tf.nn.softmax(self.upscore + tf.constant(1e-4))
         self.pred_up = tf.argmax(self.upscore, dimension=3)
 
+
+    def _batchnorm(self, bottom):
+      from tensorflow.contrib.layers.python.layers import batch_norm as batch_norm
+      with tf.name_scope('batchnorm') as scope:
+        train_op = batch_norm(bottom, is_training=True,  updates_collections=None, scope=scope, center=False)
+        test_op  = batch_norm(bottom, is_training=False, updates_collections=None, scope=scope, center=False, reuse=True)
+        return tf.cond (self.is_train_phase, lambda:train_op, lambda:test_op)
+
     def _max_pool(self, bottom, name, debug):
         pool = tf.nn.max_pool(bottom, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1],
                               padding='SAME', name=name)
@@ -138,7 +141,9 @@ class FCN32VGG:
             conv_biases = self.get_bias(name)
             bias = tf.nn.bias_add(conv, conv_biases)
 
-            relu = tf.nn.relu(bias)
+            batchnorm = self._batchnorm(bias)
+
+            relu = tf.nn.relu(batchnorm)
             # Add summary to Tensorboard
             _activation_summary(relu)
             return relu
