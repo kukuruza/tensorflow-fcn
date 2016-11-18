@@ -10,7 +10,7 @@ import sys
 import numpy as np
 import tensorflow as tf
 
-#VGG_MEAN = [103.939, 116.779, 123.68]
+VGG_MEAN = [103.939, 116.779, 123.68]
 
 
 class FCN32VGG:
@@ -35,14 +35,13 @@ class FCN32VGG:
 
         self.is_train_phase = tf.placeholder(tf.bool, name='train_phase')
 
-    def build(self, bgr, num_classes=20, random_init_fc8=False,
-              debug=False):
+    def build(self, rgb, num_classes=20, random_init_fc8=False, debug=False):
         """
         Build the VGG model using loaded weights
         Parameters
         ----------
-        bgr: normalized image batch tensor
-            Image in bgr shap.
+        rgb: image batch tensor
+            Image in rgb shap. Scaled to Intervall [0, 255]
         train: bool
             Whether to build train or inference graph
         num_classes: int
@@ -56,10 +55,16 @@ class FCN32VGG:
         # Convert RGB to BGR
 
         with tf.name_scope('Processing'):
-            if debug:
-                bgr = tf.Print(bgr, [tf.shape(bgr)],
-                               message='Shape of input image: ',
-                               summarize=4, first_n=1)
+
+            red, green, blue = tf.split(3, 3, rgb)
+            # assert red.get_shape().as_list()[1:] == [224, 224, 1]
+            # assert green.get_shape().as_list()[1:] == [224, 224, 1]
+            # assert blue.get_shape().as_list()[1:] == [224, 224, 1]
+            bgr = tf.concat(3, [
+                blue - VGG_MEAN[0],
+                green - VGG_MEAN[1],
+                red - VGG_MEAN[2],
+            ])
 
         self.conv1_1 = self._conv_layer(bgr, "conv1_1")
         self.conv1_2 = self._conv_layer(self.conv1_1, "conv1_2")
@@ -141,9 +146,9 @@ class FCN32VGG:
             conv_biases = self.get_bias(name)
             bias = tf.nn.bias_add(conv, conv_biases)
 
-            batchnorm = self._batchnorm(bias)
+            #batchnorm = self._batchnorm(bias)
 
-            relu = tf.nn.relu(batchnorm)
+            relu = tf.nn.relu(bias)
             # Add summary to Tensorboard
             _activation_summary(relu)
             return relu
